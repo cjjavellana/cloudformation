@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  DBPassword:
+    NoEcho: true
+    Description: The database admin account password (won't be echoed)
+    Type: String
+
+Resources:
+  DemoInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+      - Key: name
+        Value: demo
+
+  DemoVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+      Tags:
+        - Key: Name
+          Value: demo
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref DemoInternetGateway
+      VpcId: !Ref DemoVPC
+
+  CfDemoRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DemoVPC
+      
+  AzOneCidrBlock:
+    Type: "AWS::EC2::VPCCidrBlock"
+    Properties:
+      CidrBlock: "10.10.0.0/16"
+      VpcId: !Ref DemoVPC
+
+  DmzSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: "ap-southeast-1a"
+      CidrBlock: "10.0.1.0/24"
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref DemoVPC
+
+  AppSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: "ap-southeast-1a"
+      CidrBlock: "10.0.2.0/24"
+      VpcId: !Ref DemoVPC
+    
+  DbSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: "ap-southeast-1a"
+      CidrBlock: "10.0.3.0/24"
+      VpcId: !Ref DemoVPC
+
+  # Subnet to Route Table Association
+
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref CfDemoRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DemoInternetGateway
+
+  DmzSubnetRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DmzSubnet
+      RouteTableId: !Ref CfDemoRouteTable
+
+#  Dont expose these subnets to Internet
+#  AppSubnetRouteTableAssoc:
+#    Type: AWS::EC2::SubnetRouteTableAssociation
+#    Properties:
+#      SubnetId: !Ref AppSubnet
+#      RouteTableId: !Ref CfDemoRouteTable
+
+#  DbSubnetRouteTableAssoc:
+#    Type: AWS::EC2::SubnetRouteTableAssociation
+#    Properties:
+#      SubnetId: !Ref DbSubnet
+#      RouteTableId: !Ref CfDemoRouteTable
+
+  # IAM Resource
+
+  # S3 Resource
+  CfDemoBucket001:
+    Type: 'AWS::S3::Bucket'
+    Properties: {}
+
+
+  # EC2 Resources
+
+  # http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-instance.html
+  WebServerInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      #AvailabilityZone: ap-southeast-1a
+      ImageId: ami-05868579
+      InstanceType: t2.micro
+      SubnetId: !Ref DmzSubnet
+      KeyName: "christian_mbp15"
+      SecurityGroupIds:
+        - !GetAtt DMZSecurityGroup.GroupId
+      UserData:
+        Fn::Base64: |
+           #!/bin/bash
+           sudo yum update -y
+           sudo amazon-linux-extras install nginx1.12
+           sudo systemctl start nginx
+           sudo systemctl enable nginx
+      
+  # http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-instance.html
+  AppServerInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      #AvailabilityZone: ap-southeast-1a
+      ImageId: ami-05868579
+      InstanceType: t2.micro
+      SubnetId: !Ref AppSubnet
+      SecurityGroupIds:
+        - !GetAtt AppSecurityGroup.GroupId
+      
+  # http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html        
+  DMZSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: allow connections from world to http / https ports
+      VpcId: !Ref DemoVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  # http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html
+  AppSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: allow connections from DMZSecurityGroup
+      VpcId: !Ref DemoVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 9000
+          SourceSecurityGroupId: !Ref DMZSecurityGroup
+
+  # http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html
+  DBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: allow connections from AppSecurityGroup
+      VpcId: !Ref DemoVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 6603
+          ToPort: 6603
+          SourceSecurityGroupId: !Ref AppSecurityGroup
